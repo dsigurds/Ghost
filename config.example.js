@@ -48,6 +48,15 @@ config = {
         //  },
         // ```
 
+        // Example ldap config
+        // ```
+        //  ldap: {
+        //    url: 'ldap://localhost:389',
+        //    searchBase: 'ou=people,dc=privacylabs,dc=io',
+        //    emailField: 'mail'
+        //  },
+        // ```
+
         // #### Database
         // Ghost supports sqlite3 (default), MySQL & PostgreSQL
         database: {

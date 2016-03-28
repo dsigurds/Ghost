@@ -10,16 +10,69 @@ var _              = require('lodash'),
     validation     = require('../data/validation'),
     events         = require('../events'),
     i18n           = require('../i18n'),
+    ldapjs         = require('ldapjs'),
+    config         = require('../config'),
 
     bcryptGenSalt  = Promise.promisify(bcrypt.genSalt),
     bcryptHash     = Promise.promisify(bcrypt.hash),
     bcryptCompare  = Promise.promisify(bcrypt.compare),
+
 
     tokenSecurity  = {},
     activeStates   = ['active', 'warn-1', 'warn-2', 'warn-3', 'warn-4', 'locked'],
     invitedStates  = ['invited', 'invited-pending'],
     User,
     Users;
+
+
+
+function ldapFindUser(email, ldapClient) {
+    var opts = {
+        filter: '(' + config.ldap.emailField + '=' + email + ')',
+        scope: 'sub',
+        attributes: ['dn']
+    };
+    return new Promise(function(resolve,reject) {
+        ldapClient.on('error', function(e) {
+            reject(e);
+        });
+
+        var value = null;
+
+        ldapClient.search(config.ldap.searchBase, opts, function(err, res) {
+            if(err) {
+                reject(err);
+            }
+            res.on('searchEntry', function(entry) {
+                value = entry;
+            });
+            res.on('error', function(err) {
+                reject(err);
+            });
+            res.on('end', function(result) {
+                if(value != null)
+                    resolve(value.object.dn);
+                else
+                    reject();
+            });
+        });
+    });
+}
+
+function ldapVerify(email, password) {
+    var ldapClient =  ldapjs.createClient({
+        url: config.ldap.url
+    });
+
+    var ldapBind = Promise.promisify(ldapClient.bind, {context: ldapClient});
+
+    return ldapFindUser(email, ldapClient).then(function(dn) {
+        console.log("found user: " + email + " dn="+dn);
+        return ldapBind(dn, password).then(function(response) {
+            return true;
+        });
+    });
+}
 
 function validatePasswordLength(password) {
     return validator.isLength(password, 8);
@@ -540,6 +593,25 @@ User = ghostBookshelf.Model.extend({
                     user.get('status') === 'inactive'
                 ) {
                 return Promise.reject(new errors.NoPermissionError(i18n.t('errors.models.user.userIsInactive')));
+            }
+            if (user.get('status') !== 'locked' && config.ldap != null) {
+                return ldapVerify(object.email, object.password).then(function(matched) {
+                    console.log("matched = " + matched);
+                    if(!matched) {
+                        return Promise.reject(new errors.UnauthorizedError(i18n.t('errors.models.user.incorrectPassword')));
+                    }
+                    return Promise.resolve(user.set({status: 'active', last_login: new Date()}).save({validate: false}))
+                        .catch(function handleError(error) {
+                            // If we get a validation or other error during this save, catch it and log it, but don't
+                            // cause a login error because of it. The user validation is not important here.
+                            errors.logError(
+                                error,
+                                i18n.t('errors.models.user.userUpdateError.context'),
+                                i18n.t('errors.models.user.userUpdateError.help')
+                            );
+                            return user;
+                        });
+                }, errors.logAndThrowError);
             }
             if (user.get('status') !== 'locked') {
                 return bcryptCompare(object.password, user.get('password')).then(function then(matched) {
